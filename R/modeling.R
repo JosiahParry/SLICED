@@ -96,7 +96,7 @@ folds <- vfold_cv(train_df)
 
 
 base_rec <- recipe(geek_rating ~ min_players + 
-                     max_players + avg_time + min_time + max_time + year
+                     max_players + avg_time + min_time + max_time  + 
          num_votes, data = train_df) 
 
 int_rec <- recipe(geek_rating ~ min_players + 
@@ -124,7 +124,6 @@ adv_rec <- recipe(geek_rating ~ min_players +
   step_other(category2, threshold = 0.01) %>% 
   step_unknown(category2) %>% 
   step_dummy(category1, category2) %>% 
-  
   step_range(owned, num_votes) %>% 
   step_pca(contains("time")) %>% 
   step_other(age) %>% 
@@ -143,7 +142,6 @@ last_rec <-
   step_other(category2) %>% 
   step_unknown(category2) %>% 
   step_dummy(category1, category2) %>% 
-  
   step_range(owned, num_votes) %>% 
   step_pca(contains("time")) %>% 
   step_other(age) %>% 
@@ -155,10 +153,6 @@ last_rec <-
 
 recipes <- list(int = int_rec, base = base_rec,
                 adv = adv_rec)
-
-recipes <- list(adv_rec)
-
-last_recipe <- list(sob = last_rec)
 
 # model specifications  ---------------------------------------------------
 
@@ -207,7 +201,6 @@ models <- list(enet = enet_spec,
                rf = rf_spec)
 
 
-last_models <- list(xgb = xgb_spec, rf = rf_spec)
 # workflowsets BABY -------------------------------------------------------
 
 
@@ -216,11 +209,6 @@ wfs <- workflow_set(recipes, models, cross = TRUE)
 fits <- workflow_map(wfs, resamples = folds, verbose = TRUE,
              control = control_grid(parallel_over = "everything"))
 
-
-lastwf <- workflow_set(last_recipe, last_models)
-
-last_fits <- workflow_map(lastwf, resamples = folds, verbose = TRUE,
-             control = control_grid(parallel_over = "everything"))
 
 # model evaluation --------------------------------------------------------
 
@@ -239,7 +227,8 @@ xgb_controls <- top_15_current_models %>%
   filter(str_detect(wflow_id, 'xgb')) %>% 
   dplyr::slice(1) %>% 
   select(where(~!is.na(.))) %>% 
-  select(trees, min_n, tree_depth, learn_rate)
+  select(trees, min_n, tree_depth, learn_rate,
+         sample_size, loss_reduction)
 
 xgb_wf <- pull_workflow(fits, "int_xgb")
 
@@ -257,7 +246,7 @@ predict(xgb_fit, holdout_set) %>%
   geom_histogram()
 
 
-write_rds(fits, "models/last_models.rds")
+#write_rds(fits, "models/last_models.rds")
 
 # final models ------------------------------------------------------------
 final_mod_tunes <- fits %>% 
@@ -271,10 +260,10 @@ final_mod_tunes <- fits %>%
 # elastic net
 enet_tunes <- final_mod_tunes %>% 
   ungroup() %>%  
-  slice(1) %>% 
+  dplyr::slice(1) %>% 
   select(penalty, mixture)
 
-final_enet <- pull_workflow(fits, "recipe_enet") %>% 
+final_enet <- pull_workflow(fits, "adv_enet") %>% 
   finalize_workflow(enet_tunes) %>% 
   fit(train_df)
 
@@ -291,7 +280,7 @@ nnet_control <- final_mod_tunes %>%
          penalty, epochs)
 
 
-final_nnet <- pull_workflow(fits, "recipe_nnet") %>% 
+final_nnet <- pull_workflow(fits, "adv_nnet") %>% 
   finalize_workflow(nnet_control) %>% 
   fit(train_df)
 
@@ -308,7 +297,7 @@ rf_control <- final_mod_tunes %>%
   select(mtry, min_n)
 
 
-final_rf <- pull_workflow(fits, "recipe_rf") %>% 
+final_rf <- pull_workflow(fits, "adv_rf") %>% 
   finalize_workflow(rf_control) %>% 
   fit(train_df)
 
@@ -341,7 +330,7 @@ xgb_controls <- final_mod_tunes %>%
          learn_rate, min_n, 
          loss_reduction, sample_size)
   
-final_xgb <- pull_workflow(fits, "recipe_xgb") %>% 
+final_xgb <- pull_workflow(fits, "adv_xgb") %>% 
   finalize_workflow(xgb_controls) %>% 
   fit(train_df)
 
@@ -352,6 +341,36 @@ augment(final_xgb, holdout_set) %>%
 
 
 # last ditch effort -------------------------------------------------------
+
+# last recipe
+
+last_rec <- 
+  recipe(geek_rating ~ min_players + 
+           max_players + avg_time + min_time + max_time +
+           year + 
+           num_votes + owned + age + category1 + category2,
+         data = train_df) %>% 
+  step_impute_knn(year) %>% 
+  step_other(category1) %>% 
+  step_other(category2) %>% 
+  step_unknown(category2) %>% 
+  step_dummy(category1, category2) %>% 
+  step_range(owned, num_votes) %>% 
+  step_pca(contains("time")) %>% 
+  step_other(age) %>% 
+  step_dummy(age) %>% 
+  step_naomit(all_numeric_predictors())
+
+last_models <- list(xgb = xgb_spec, rf = rf_spec)
+last_recipe <- list(sob = last_rec)
+
+lastwf <- workflow_set(last_recipe, last_models)
+
+last_fits <- workflow_map(lastwf, resamples = folds, verbose = TRUE,
+             control = control_grid(parallel_over = "everything"))
+
+
+
 last_controls <- last_fits %>% 
   unnest(result) %>% 
   unnest(.metrics) %>% 
